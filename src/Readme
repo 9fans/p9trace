@@ -1,0 +1,27 @@
+This directory contains source code for parsing the Plan 9 file system
+trace files.  The included files are
+	
+Readme	- this file
+Notice	- terms of use
+Makefile - simple makefile
+inflate.c - decompresses blocks of data encoded in deflate format
+trace.h - header file to be included by client applications
+trace.c - parser
+super.c - sample application; lists all the super blocks in one of more trace files
+
+The trace.h header declares a number of constants and types and a
+single entry point:
+
+	TrBlock *trRead(FILE*);
+
+This function reads a record from the given trace file and advances
+the file pointer to the next record.  The function returns a data
+structure that contains all the information available in the trace
+record.  The returned structure is allocated using malloc; the memory
+should be reclaimed using free.
+
+Random access to records can be implemented by an application by
+recording the location of the file pointer before reading a record and
+then seeking back to that location and rereading the record.  Eof and
+parse errors are indicated by returning a NULL value.  There is
+currently no way to distinguish between these two conditions.
