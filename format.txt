@@ -1,0 +1,205 @@
+Trace file format
+Last modified: 10/02/2001
+Comments to seanq@bell-labs.com
+
+This document describes the file format for the trace files.
+
+The trace files contain a condensed version of the data blocks of a
+plan 9 file system.  For each block in the file system, there is a
+corresponding record in the trace files.  Multiple trace files are
+used to fully describe a file system to avoid the individual trace
+files becoming too large.  In particular, each trace file is limited
+to one million blocks.
+
+A trace file consists of a concatenation of records.  Each record
+contains a number of fields that are common to all blocks including
+the address of the block, its type, various sizes, the file it is
+associated with and a hash of the block's original contents.  Depending
+on the type of the block, the record also contains additional
+information, including all the block pointers and most of the
+directory information.  This extra information enables the trace file
+to completely describe the structure of the file system.
+
+To save file space, each record may be individually compressed using
+the deflate compression format (RFC1951).
+
+The following description uses a C style syntax to describe the format
+of data structures.  The three primitive types are char, short and
+long, corresponding to 1 byte, 2 byte and 4 byte integers
+respectively.  These types are stored, with no alignment, in big
+endian order.  The integers are signed, but in reality almost none of
+the values are negative.
+
+Each record in a trace file is preceded by a two byte header.  The
+high bit of the first byte indicates if the record is compressed or
+not.  The remaining 15 bits give the size of the record in big endian
+order.  For compressed records, the size is the compressed size.
+
+Each record commences with the following structure
+
+	struct {
+		char tag;
+		long path;
+		long addr;
+		short zsize;
+		short wsize;
+		short dsize;
+		char score[20];
+	};
+
+The tag gives the type of the block and is one of the following
+
+	enum {
+		Null = 0,		/* blank block */
+		Super = 1,		/* super block */
+		Dir = 2,		/* directory contents */
+		Ind1 = 3,		/* indirection */
+		Ind2 = 4,		/* double indirection */
+		File = 5,		/* file contents */
+	};
+
+A description of each block type is given below.
+
+Each file (including directories) has a unique identifier, called a
+path.  The path is unique within the file system and over time, i.e.
+when a file is deleted, its path is not reused.  Each block is
+associated with one and only one file.  The path field indicates the
+file and is provided for integrity checking.
+
+The addr field gives the address of the block.  Blocks are stored in
+sequence within a trace file.
+
+The zsize, wsize, and dsize fields give a summary of the size of the
+data stored in the block.  Each block is a fixed size.  Emelie uses
+16Kb blocks while bootes uses 6KB blocks.  For integrity checking,
+each block is labeled with its tag and path, consuming 8 bytes of
+every block.  The effective block size is thus 6136 and 16376 bytes
+for bootes and emelie respectively.  The zsize field gives the zero
+truncated size of the data in the block.  Wsize gives the size of the
+data when compressed with a fast lempel-zip compressor we have
+developed.  The dsize field given the size when compressed into the
+standard deflate format (RFC1951).
+
+The 20 byte score provides a hash of the data contained in a block.
+The hash is based on the sha1 algorithm, but it has been obfuscated by
+the addition of a secret key.  The 20 byte score gives a unique
+identifier for the original contents of the block.  The hash does not
+cover the 8 byte integrity label; blocks with the same score contain
+the same data, but perhaps have different integrity labels.
+
+What follows the initial block information depends on the type of the
+block.
+
+Null Blocks
+-----------
+These blocks represent unused areas on the storage media or blocks
+that were corrupted.  There is no additional data.
+
+Super Blocks
+------------
+Each snapshot of the file system generates a new super block.  The
+super block is the root of the tree of blocks that makes up a snapshot
+of the file system.  Each super block contains the following structure
+
+	struct {
+		long	cwraddr;
+		long	roraddr;
+		long	last;
+		long	next;
+	};
+
+The cwraddr field gives the address of a Dir block that contains the
+root of the file system associated with this super block.  The roraddr
+field gives the root address of the dump file system, which consists
+of a hierarchy of all the file system snapshots taken up to this point
+in time, including the current snapshot.  The last and next fields
+give the address of the previous and next super blocks.
+
+Dir
+---
+A Dir block contains an array of directory entry structures.  The Plan
+9 file system uses a fixed size directory entry of 88 bytes, thus a
+Dir block contains 186 and 69 entries on emelie and bootes
+respectively.  The Plan 9 file system does not move directory entries;
+once and entry is allocated in the block, it remains at a fixed
+location until the file is deleted.  The trace file format, however,
+does compact the directory entries.  After the standard block
+information, the record contains a short indicating the number of
+following directory entries.  All the file meta data, except the file
+name, is give in the trace file.  Each directory entry has the
+structure
+
+	struct {
+		short slot;
+		long path;
+		long version;
+		short mode;
+		long size;
+		long dblock[6];
+		long iblock;
+		long diblock;
+		long mtime;
+		long atime;
+		short uid;
+		short gid;
+		short wid;
+	};
+
+The slot field specifies the position of the directory entry in the
+original directory block.  The entries are stored in ascending order.
+The path field gives the identifier for the file.  All the blocks
+associated with this file will have this path value.  The version
+field is updated every time a write is performed to the file. Plan 9
+uses this field to determine if a file has been modified.  The mode
+field indicates the permission bits and other attributes of the file.
+The bits have the following meanings:
+
+	0x4000	a directory
+	0x2000	append only
+	0x1000	a lock file
+	0x0100	owner read permission
+	0x0080	owner write permission
+	0x0040	owner exec permission
+	0x0020	group read permission
+	0x0010	group write permission
+	0x0008	group exec permission
+	0x0004	other read permission
+	0x0002	other write permission
+	0x0001	other exec permission
+
+The size field gives the length of the file.  For directories, the
+size field is not used and should be zero.  The size of files is
+limited to 2^31 – 1.
+
+The dblock, iblock, and diblock fields provide the pointer to the
+blocks associated with the file.  There are 6 direct pointers, one
+indirect pointer and one double indirect pointer.  A value of
+zero in a pointer field indicates a null pointer.  Directory files
+contain no holes, but data files may.
+
+The mtime and atime fields give the time (GMT seconds since 1/1/1970)
+that the file was last modified and accessed respectively.
+
+The uid, gid, and wid fields give the user id for the owner, group,
+and most recent modifier of the file.  The mapping from user id to
+user name is not given.
+
+Ind1
+----
+Ind1 blocks contain pointers to File or Dir blocks.  Each block
+pointer is a long and the file system stores 1524 pointers per block
+for bootes and 4094 pointers per block for emelie.  The block is zero
+truncated in the trace file.  After the standard block information,
+the record contains a short indicating the number of following
+pointers.
+
+Ind1
+----
+Ind2 blocks contain are double indirection blocks and contains pointer
+to Ind1 blocks.  They are stored in the trace file in the same manner
+and Ind1 blocks.
+
+File
+----
+File blocks contain data for regular files.  No additional information
+is provided in the trace.
